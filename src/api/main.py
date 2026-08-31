@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any
 import pandas as pd
+import time
 
 import joblib
 from evidently import DataDefinition, Dataset, Regression, Report
@@ -45,6 +46,11 @@ FEATURES_ORDERED = [
 ]
 
 
+# --- Custom Exceptions ---
+class EvaluationError(Exception):
+    """Custom exception for errors during model evaluation."""
+
+
 # --- FastAPI App Initialization ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -72,9 +78,46 @@ app = FastAPI(
 )
 
 # --- Prometheus Metrics Definitions ---
+registry = CollectorRegistry()
 
+# Counter 'api_requests_total', label par endpoint, method, et status code
+api_requests_total = Counter(
+    "api_requests_total",
+    "Total number of API requests",
+    labelnames=["endpoint", "method", "status_code"],
+    registry=registry,
+)
 
-# --- Data Ingestion and Preparation Functions ---
+api_request_duration_seconds = Histogram(
+    "api_request_duration_seconds",
+    "Duration of API requests in seconds",
+    labelnames=["endpoint", "method", "status_code"],
+    registry=registry,
+)
+
+model_rmse_score = Gauge(
+    "model_rmse_score",
+    "RMSE score of the trained model",
+    registry=registry,
+)
+
+model_mae_score = Gauge(
+    "model_mae_score",
+    "MAE score of the trained model",
+    registry=registry,
+)
+
+model_r2_score = Gauge(
+    "model_r2_score",
+    "R2 score of the trained model",
+    registry=registry,
+)
+
+evidently_data_drift_detected_status = Gauge(
+    "evidently_data_drift_detected_status",
+    "Status of data drift detected by Evidently",
+    registry=registry,
+)
 
 
 # --- Pydantic Models for API Input/Output ---
@@ -138,21 +181,65 @@ async def health_check():
 
 @app.post("/predict", response_model=PredictionOutput)
 async def predict(input_data: BikeSharingInput):
-    # Convert input data to a DataFrame
-    logger.info(f"Received input data: {input_data}")
-    input_df = pd.DataFrame([input_data.model_dump()])
 
-    X = input_df[FEATURES_ORDERED]
+    logger.info("Starting prediction request")
+    # Values to track for logging and metrics
+    start_time = time.time()  # Début du timer pour la durée de la requête
+    status_code = "200"
+    try:
+        # Convert input data to a DataFrame
+        logger.info(f"Received input data: {input_data}")
 
-    # Ensure the model is loaded
-    logger.info("Checking if the model is loaded")
-    if not hasattr(app.state, "model"):
-        logger.error("Model is not loaded")
-        raise RuntimeError("Model is not loaded")
+        # validate input data
+        input_data_dict = input_data.model_dump()
+        for feature in FEATURES_ORDERED:
+            if feature not in input_data_dict:
+                logger.error(f"Missing required feature: {feature}")
+                status_code = "400"
+                raise HTTPException(
+                    status_code=400, detail=f"Missing required feature: {feature}"
+                )
 
-    # Make prediction
-    logger.info("Making prediction with the loaded model")
-    prediction = app.state.model.predict(X)
-    logger.info(f"Prediction result: {prediction[0]}")
+        input_df = pd.DataFrame([input_data.model_dump()])
 
-    return PredictionOutput(predicted_count=prediction[0])
+        X = input_df[FEATURES_ORDERED]
+
+        # Ensure the model is loaded
+        logger.info("Checking if the model is loaded")
+        if not hasattr(app.state, "model"):
+            logger.error("Model is not loaded")
+            status_code = "500"
+            raise HTTPException(status_code=500, detail="Model is not loaded")
+
+        # Make prediction
+        logger.info("Making prediction with the loaded model")
+        prediction = app.state.model.predict(X)
+        if not prediction:
+            logger.error("Prediction failed, no result returned")
+            status_code = "500"
+            raise HTTPException(status_code=500, detail="Prediction failed")
+
+        logger.info(f"Prediction result: {prediction[0]}")
+
+        return PredictionOutput(predicted_count=prediction[0])
+    except HTTPException as e:
+        status_code = str(e.status_code)
+        raise
+    except EvaluationError as e:
+        logger.error(
+            f"Error during prediction for input data: {input_data_dict}... Error: {e}"
+        )
+        status_code = "500"
+        raise HTTPException(
+            status_code=500, detail=f"Prediction failed due to an internal error: {e}"
+        )
+    finally:
+        end_time = time.time()
+        # Durée de la requête
+        duration = end_time - start_time
+        api_request_duration_seconds.labels(
+            endpoint="/predict", method="POST", status_code=status_code
+        ).observe(duration)
+        api_requests_total.labels(
+            endpoint="/predict", method="POST", status_code=status_code
+        ).inc()
