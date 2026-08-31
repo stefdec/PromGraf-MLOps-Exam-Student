@@ -25,10 +25,24 @@ logger = logging.getLogger(__name__)
 
 # --- Global Variables for Model and Data ---
 TARGET = "cnt"
-ALL_TARGETS = ["cnt", "casual", "registered"]
+COLS_TO_DROP = ["yr", "cnt", "casual", "registered"]
 PREDICTION = "prediction"
 NUM_FEATS = ["temp", "atemp", "hum", "windspeed", "mnth", "hr", "weekday"]
 CAT_FEATS = ["season", "holiday", "workingday", "weathersit"]
+
+FEATURES_ORDERED = [
+    "season",
+    "mnth",
+    "hr",
+    "holiday",
+    "weekday",
+    "workingday",
+    "weathersit",
+    "temp",
+    "atemp",
+    "hum",
+    "windspeed",
+]
 
 
 # --- FastAPI App Initialization ---
@@ -37,7 +51,7 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     logger.info("Starting API...")
 
-    _train_and_predict_reference_model(TARGET, ALL_TARGETS, NUM_FEATS, CAT_FEATS)
+    _train_and_predict_reference_model(TARGET, COLS_TO_DROP, NUM_FEATS, CAT_FEATS)
 
     # load the trained model for inference
     logger.info("Loading the trained model for inference")
@@ -76,11 +90,11 @@ class BikeSharingInput(BaseModel):
     holiday: int = Field(..., example=0)
     workingday: int = Field(..., example=0)
     weathersit: int = Field(..., example=1)
-    dteday: datetime.date = Field(
-        ...,
-        example="2011-01-01",
-        description="Date of the record in YYYY-MM-DD format.",
-    )
+    # dteday: datetime.date = Field(
+    #     ...,
+    #     example="2011-01-01",
+    #     description="Date of the record in YYYY-MM-DD format.",
+    # )
 
 
 class PredictionOutput(BaseModel):
@@ -128,6 +142,8 @@ async def predict(input_data: BikeSharingInput):
     logger.info(f"Received input data: {input_data}")
     input_df = pd.DataFrame([input_data.model_dump()])
 
+    X = input_df[FEATURES_ORDERED]
+
     # Ensure the model is loaded
     logger.info("Checking if the model is loaded")
     if not hasattr(app.state, "model"):
@@ -136,7 +152,7 @@ async def predict(input_data: BikeSharingInput):
 
     # Make prediction
     logger.info("Making prediction with the loaded model")
-    prediction = app.state.model.predict(input_df)
+    prediction = app.state.model.predict(X)
     logger.info(f"Prediction result: {prediction[0]}")
 
     return PredictionOutput(predicted_count=prediction[0])
