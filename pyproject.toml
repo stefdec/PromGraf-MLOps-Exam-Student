@@ -1,0 +1,16 @@
+[project]
+name = "promgraf-mlops-exam-student"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "evidently>=0.7.21",
+    "fastapi>=0.141.1",
+    "joblib>=1.5.3",
+    "pandas>=3.0.5",
+    "prometheus-client>=0.26.0",
+    "pydantic>=2.13.5",
+    "scikit-learn>=1.9.0",
+    "uvicorn>=0.52.4",
+]
