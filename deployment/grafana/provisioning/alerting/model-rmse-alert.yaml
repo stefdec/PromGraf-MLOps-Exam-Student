@@ -1,0 +1,91 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: Bike model alerts
+    folder: MLOps
+    interval: 10s
+    rules:
+      - uid: bike_model_rmse_high
+        title: Bike model RMSE too high
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: model_rmse_score{job="bike_api"}
+              instant: true
+              intervalMs: 1000
+              legendFormat: RMSE
+              maxDataPoints: 43200
+              range: false
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: []
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - B
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 100
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+        dashboardUid: bike-model-observability
+        panelId: 2
+        noDataState: NoData
+        execErrState: Error
+        for: 10s
+        annotations:
+          summary: Bike model RMSE is too high
+          description: The model RMSE is above 100. Check the latest evaluation and model quality.
+        labels:
+          severity: critical
+          service: bike-api
+        isPaused: false

@@ -5,6 +5,7 @@ services:
       - "8080:8080"
     restart: always
     container_name: bike-api
+    
   evaluation:
     build: ./src/evaluation
     depends_on:
