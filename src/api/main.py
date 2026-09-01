@@ -1,14 +1,14 @@
 import datetime
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any
-import pandas as pd
-import time
 
 import joblib
+import pandas as pd
 from evidently import DataDefinition, Dataset, Regression, Report
 from evidently.metrics import MAE, RMSE, R2Score
-from evidently.presets import DataDriftPreset
+from evidently.presets import DataDriftPreset, RegressionPreset
 from fastapi import FastAPI, HTTPException, Request, Response
 from prometheus_client import (
     CollectorRegistry,
@@ -18,7 +18,9 @@ from prometheus_client import (
     generate_latest,
 )
 from pydantic import BaseModel, Field
-from train_model import _train_and_predict_reference_model
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from train_model import train_and_predict_reference_model
+from reports import generate_validation_report
 
 # --- Logging Configuration ---
 logging.basicConfig(level=logging.INFO)
@@ -50,32 +52,6 @@ FEATURES_ORDERED = [
 class EvaluationError(Exception):
     """Custom exception for errors during model evaluation."""
 
-
-# --- FastAPI App Initialization ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # --- Startup ---
-    logger.info("Starting API...")
-
-    _train_and_predict_reference_model(TARGET, COLS_TO_DROP, NUM_FEATS, CAT_FEATS)
-
-    # load the trained model for inference
-    logger.info("Loading the trained model for inference")
-    app.state.model = joblib.load("./models/bike_share_reference_model.bin")
-    logger.info("Model loaded successfully -- Application ready")
-
-    yield
-
-    # --- Shutdown ---
-    logger.info("Stopping application...")
-
-
-app = FastAPI(
-    lifespan=lifespan,
-    title="Bike Sharing Predictor API",
-    description="API for predicting bike sharing demand with MLOps monitoring.",
-    version="1.0.0",
-)
 
 # --- Prometheus Metrics Definitions ---
 registry = CollectorRegistry()
@@ -162,8 +138,41 @@ class EvaluationReportOutput(BaseModel):
     mape: float | None
     mae: float | None
     r2score: float | None
-    drift_detected: int
+    drift_detected: int | None
     evaluated_items: int
+
+
+# --- FastAPI App Initialization ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup ---
+    logger.info("Starting API...")
+
+    X_jan, y_jan = train_and_predict_reference_model(
+        TARGET, COLS_TO_DROP, NUM_FEATS, CAT_FEATS
+    )
+
+    # Save the reference data for later use in evaluation
+    app.state.X_jan = X_jan
+    app.state.y_jan = y_jan
+
+    # load the trained model for inference
+    logger.info("Loading the trained model for inference")
+    app.state.model = joblib.load("./models/bike_share_reference_model.bin")
+    logger.info("Model loaded successfully -- Application ready")
+
+    yield
+
+    # --- Shutdown ---
+    logger.info("Stopping application...")
+
+
+app = FastAPI(
+    lifespan=lifespan,
+    title="Bike Sharing Predictor API",
+    description="API for predicting bike sharing demand with MLOps monitoring.",
+    version="1.0.0",
+)
 
 
 # --- API Endpoints ---
@@ -243,3 +252,100 @@ async def predict(input_data: BikeSharingInput):
         api_requests_total.labels(
             endpoint="/predict", method="POST", status_code=status_code
         ).inc()
+
+
+@app.post("/evaluate", response_model=EvaluationReportOutput)
+async def evaluate(input_data: EvaluationData):
+    logger.info("Starting evaluation request")
+    # Values to track for logging and metrics
+    start_time = time.time()
+    status_code = "200"
+    try:
+        # Convert input data to a DataFrame
+        logger.info("Received evaluation input data")
+
+        input_data_dict = input_data.model_dump()
+        evaluation_df = pd.DataFrame(input_data_dict["data"])
+
+        # Ensure the model is loaded
+        logger.info("Checking if the model is loaded for evaluation")
+        if not hasattr(app.state, "model"):
+            logger.error("Model is not loaded")
+            status_code = "500"
+            raise HTTPException(status_code=500, detail="Model is not loaded")
+
+        # Make predictions
+        logger.info("Making predictions for evaluation on the received data")
+        X_feb = evaluation_df[FEATURES_ORDERED]
+        y_feb = evaluation_df["cnt"]
+        y_feb_pred = app.state.model.predict(X_feb)
+
+        # Preparing the reference data and current data for the validation report
+        reference_data = app.state.X_jan.copy()
+        reference_data["cnt"] = app.state.y_jan.copy()
+        reference_data["prediction"] = app.state.model.predict(app.state.X_jan)
+
+        current_data = X_feb.copy()
+        current_data["cnt"] = y_feb.copy()
+        current_data["prediction"] = y_feb_pred.copy()
+
+        rmse, mae, r2, mape, drift_detected, drifted_columns_count = (
+            generate_validation_report(
+                reference_data=reference_data,
+                current_data=current_data,
+                num_features=NUM_FEATS,
+                cat_features=CAT_FEATS,
+                target="cnt",
+            )
+        )
+
+        model_rmse_score.set(rmse)
+        model_mae_score.set(mae)
+        model_r2_score.set(r2)
+        logger.info(
+            f"Evaluation results - RMSE: {rmse}, MAE: {mae}, R2: {r2}, Drift Detected: {drift_detected}, Drifted Columns Count: {drifted_columns_count}"
+        )
+
+        if drift_detected:
+            logger.warning(
+                f"Data drift detected! Number of drifted columns: {drifted_columns_count}"
+            )
+            evidently_data_drift_detected_status.set(1)
+        else:
+            evidently_data_drift_detected_status.set(0)
+
+        return EvaluationReportOutput(
+            message="Evaluation completed successfully",
+            rmse=rmse,
+            mape=mape,
+            mae=mae,
+            r2score=r2,
+            drift_detected=drift_detected,
+            evaluated_items=len(evaluation_df),
+        )
+    except HTTPException as e:
+        status_code = str(e.status_code)
+        raise
+    except (EvaluationError, KeyError, ValueError) as e:
+        logger.error(f"Error during evaluation for input data... Error: {e}")
+        status_code = "500"
+        raise HTTPException(
+            status_code=500, detail=f"Evaluation failed due to an internal error: {e}"
+        )
+    finally:
+        end_time = time.time()
+        duration = end_time - start_time
+        api_request_duration_seconds.labels(
+            endpoint="/evaluate", method="POST", status_code=status_code
+        ).observe(duration)
+        api_requests_total.labels(
+            endpoint="/evaluate", method="POST", status_code=status_code
+        ).inc()
+
+
+@app.get("/metrics")
+async def metrics():
+    """
+    Expose Prometheus metrics.
+    """
+    return Response(content=generate_latest(registry), media_type="text/plain")

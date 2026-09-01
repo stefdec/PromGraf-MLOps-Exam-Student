@@ -4,7 +4,6 @@ import os
 import joblib
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ def _save_model(model, model_path):
     logger.info("Model saved successfully")
 
 
-def _train_and_predict_reference_model(target, all_targets, num_feats, cat_feats):
+def train_and_predict_reference_model(target, all_targets, num_feats, cat_feats):
 
     df = _fetch_data()
 
@@ -67,20 +66,22 @@ def _train_and_predict_reference_model(target, all_targets, num_feats, cat_feats
         raise ValueError("X et y n'ont pas les mêmes index avant le filtrage")
 
     X_jan = X.copy()
-    y_period = y.copy()
+    y_jan = y.copy()
 
     X_jan = X_jan.drop(columns=["dteday"])
 
     X_jan = X_jan.reset_index(drop=True)
-    y_period = y_period.reset_index(drop=True)
+    y_jan = y_jan.reset_index(drop=True)
 
     # Initialize and train a Random Forest Regressor model
     logger.info("Training Random Forest Regressor model")
     model = RandomForestRegressor()
-    model.fit(X_jan, y_period)
+    model.fit(X_jan, y_jan)
     logger.info("Random Forest Regressor model trained successfully")
 
     # Save the trained model
     logger.info("Saving the trained model")
     _save_model(model, "./models/bike_share_reference_model.bin")
     logger.info("Trained model saved successfully")
+
+    return X_jan, y_jan
