@@ -1,0 +1,20 @@
+# deployment/prometheus/rules/alert_rules.yml
+    groups:
+      - name: bike-api-alerts
+        rules:
+          - alert: BikeApiDown
+            expr: up{job="bike_api"} == 0 # La condition PromQL qui déclenche l'alerte
+            for: 1m # L'alerte se déclenche si la condition est vraie pendant 1 minute continue
+            labels:
+              severity: critical # Label pour la gravité de l'alerte (utile pour filtrer et prioriser)
+            annotations:
+              summary: "L'API Bike est injoignable."
+              description: "Le job 'bike_api' est en statut DOWN (injoignable) depuis plus de 1 minute. Veuillez vérifier le conteneur `bike-api`."
+          - alert: DataDriftDetected
+            expr: evidently_data_drift_detected_status == 1 # La condition PromQL qui déclenche l'alerte si un drift de données est détecté
+            for: 5m # L'alerte se déclenche si la condition est vraie pendant 5 minutes continues
+            labels:
+              severity: warning # Label pour la gravité de l'alerte
+            annotations:
+              summary: "Un drift de données a été détecté."
+              description: "Un drift de données a été détecté depuis plus de 5 minutes. Veuillez vérifier la qualité et la distribution des données d'entrée."
