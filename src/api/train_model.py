@@ -19,7 +19,7 @@ def _process_data(df, num_feats, cat_feats):
     df["dteday"] = pd.to_datetime(df["dteday"])
 
     date_start = "2011-01-01"
-    date_end = "2011-12-31"
+    date_end = "2011-01-31"
 
     jan_data = df[(df["dteday"] >= date_start) & (df["dteday"] <= date_end)]
 
