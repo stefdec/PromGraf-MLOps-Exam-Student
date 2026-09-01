@@ -175,6 +175,30 @@ app = FastAPI(
 )
 
 
+# --- Middleware for logging request metrics ---
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start_time = time.time()
+
+    response = await call_next(request)
+
+    duration = time.time() - start_time
+
+    api_request_duration_seconds.labels(
+        endpoint=request.url.path,
+        method=request.method,
+        status_code=str(response.status_code),
+    ).observe(duration)
+
+    api_requests_total.labels(
+        endpoint=request.url.path,
+        method=request.method,
+        status_code=str(response.status_code),
+    ).inc()
+
+    return response
+
+
 # --- API Endpoints ---
 @app.get("/")
 async def read_root():
@@ -192,74 +216,68 @@ async def health_check():
 async def predict(input_data: BikeSharingInput):
 
     logger.info("Starting prediction request")
-    # Values to track for logging and metrics
-    start_time = time.time()  # Début du timer pour la durée de la requête
-    status_code = "200"
+
     try:
-        # Convert input data to a DataFrame
         logger.info(f"Received input data: {input_data}")
 
-        # validate input data
+        # Convert input data to dict
         input_data_dict = input_data.model_dump()
+
+        # Validate expected features
         for feature in FEATURES_ORDERED:
             if feature not in input_data_dict:
                 logger.error(f"Missing required feature: {feature}")
-                status_code = "400"
                 raise HTTPException(
-                    status_code=400, detail=f"Missing required feature: {feature}"
+                    status_code=400,
+                    detail=f"Missing required feature: {feature}",
                 )
 
-        input_df = pd.DataFrame([input_data.model_dump()])
-
+        # Convert input data to DataFrame
+        input_df = pd.DataFrame([input_data_dict])
         X = input_df[FEATURES_ORDERED]
 
         # Ensure the model is loaded
         logger.info("Checking if the model is loaded")
         if not hasattr(app.state, "model"):
             logger.error("Model is not loaded")
-            status_code = "500"
-            raise HTTPException(status_code=500, detail="Model is not loaded")
+            raise HTTPException(
+                status_code=500,
+                detail="Model is not loaded",
+            )
 
         # Make prediction
         logger.info("Making prediction with the loaded model")
         prediction = app.state.model.predict(X)
-        if not prediction:
+
+        if prediction is None or len(prediction) == 0:
             logger.error("Prediction failed, no result returned")
-            status_code = "500"
-            raise HTTPException(status_code=500, detail="Prediction failed")
+            raise HTTPException(
+                status_code=500,
+                detail="Prediction failed",
+            )
 
         logger.info(f"Prediction result: {prediction[0]}")
 
         return PredictionOutput(predicted_count=prediction[0])
-    except HTTPException as e:
-        status_code = str(e.status_code)
+
+    except HTTPException:
         raise
-    except EvaluationError as e:
+
+    except (EvaluationError, KeyError, ValueError) as e:
         logger.error(
-            f"Error during prediction for input data: {input_data_dict}... Error: {e}"
+            f"Error during prediction for input data: {input_data_dict}. Error: {e}"
         )
-        status_code = "500"
+
         raise HTTPException(
-            status_code=500, detail=f"Prediction failed due to an internal error: {e}"
+            status_code=500,
+            detail=f"Prediction failed due to an internal error: {e}",
         )
-    finally:
-        end_time = time.time()
-        # Durée de la requête
-        duration = end_time - start_time
-        api_request_duration_seconds.labels(
-            endpoint="/predict", method="POST", status_code=status_code
-        ).observe(duration)
-        api_requests_total.labels(
-            endpoint="/predict", method="POST", status_code=status_code
-        ).inc()
 
 
 @app.post("/evaluate", response_model=EvaluationReportOutput)
 async def evaluate(input_data: EvaluationData):
     logger.info("Starting evaluation request")
-    # Values to track for logging and metrics
-    start_time = time.time()
-    status_code = "200"
+
     try:
         # Convert input data to a DataFrame
         logger.info("Received evaluation input data")
@@ -271,7 +289,6 @@ async def evaluate(input_data: EvaluationData):
         logger.info("Checking if the model is loaded for evaluation")
         if not hasattr(app.state, "model"):
             logger.error("Model is not loaded")
-            status_code = "500"
             raise HTTPException(status_code=500, detail="Model is not loaded")
 
         # Make predictions
@@ -323,24 +340,13 @@ async def evaluate(input_data: EvaluationData):
             drift_detected=drift_detected,
             evaluated_items=len(evaluation_df),
         )
-    except HTTPException as e:
-        status_code = str(e.status_code)
+    except HTTPException:
         raise
     except (EvaluationError, KeyError, ValueError) as e:
         logger.error(f"Error during evaluation for input data... Error: {e}")
-        status_code = "500"
         raise HTTPException(
             status_code=500, detail=f"Evaluation failed due to an internal error: {e}"
         )
-    finally:
-        end_time = time.time()
-        duration = end_time - start_time
-        api_request_duration_seconds.labels(
-            endpoint="/evaluate", method="POST", status_code=status_code
-        ).observe(duration)
-        api_requests_total.labels(
-            endpoint="/evaluate", method="POST", status_code=status_code
-        ).inc()
 
 
 @app.get("/metrics")

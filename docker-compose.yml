@@ -4,12 +4,19 @@ services:
     ports:
       - "8080:8080"
     restart: always
+    container_name: bike-api
   evaluation:
     build: ./src/evaluation
     depends_on:
       - bike-api
 
-    prometheus:
+  predict:
+    build: ./src/predict
+    container_name: predict
+    depends_on:
+      - bike-api
+
+  prometheus:
     image: prom/prometheus
     ports:
       - "9090:9090"
@@ -31,6 +38,8 @@ services:
       - "3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./deployment/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deployment/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
     restart: always

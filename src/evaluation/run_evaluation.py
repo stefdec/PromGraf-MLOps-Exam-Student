@@ -13,8 +13,8 @@ warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 # --- Configuration ---
 DATASET_URL = "https://archive.ics.uci.edu/static/public/275/bike+sharing+dataset.zip"
 
-# API_URL = "http://bike-api:8080"
-API_URL = "http://localhost:8080"
+API_URL = "http://bike-api:8080"
+# API_URL = "http://localhost:8080"
 
 API_EVALUATE_URL = f"{API_URL}/evaluate"
 API_PREDICT_URL = f"{API_URL}/predict"

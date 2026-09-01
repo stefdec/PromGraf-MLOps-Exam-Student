@@ -6,3 +6,6 @@ stop:
 
 evaluation:
 	docker-compose up -d --build evaluation
+
+predict:
+	docker-compose up -d --build predict
