@@ -212,6 +212,17 @@ async def health_check():
     return {"status": "ok"}
 
 
+@app.get("/false_rmse")
+async def false_rmse():
+    false_rmse_value = 1000.0
+    model_rmse_score.set(false_rmse_value)
+    logger.warning(f"Forcing RMSE metric to {false_rmse_value} for alert testing")
+    return {
+        "message": "RMSE metric forced to a high value for alert testing",
+        "rmse": false_rmse_value,
+    }
+
+
 @app.post("/predict", response_model=PredictionOutput)
 async def predict(input_data: BikeSharingInput):
 
