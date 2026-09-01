@@ -6,6 +6,7 @@ import io
 import zipfile
 import os
 import sys
+import time
 import warnings
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
@@ -20,6 +21,8 @@ API_EVALUATE_URL = f"{API_URL}/evaluate"
 API_PREDICT_URL = f"{API_URL}/predict"
 
 EVALUATION_SAMPLE_SIZE = 1000  # Nombre d'échantillons à utiliser pour chaque évaluation
+MAX_RETRIES = 10
+RETRY_DELAY_SECONDS = 10
 
 WEEKLY_PERIODS = {
     "week1_february": ("2011-01-29 00:00:00", "2011-02-07 23:00:00"),
@@ -75,7 +78,7 @@ def _process_data(raw_data: pd.DataFrame) -> pd.DataFrame:
 
 def run_evaluation(
     full_data: pd.DataFrame, period_name: str, start_date_str: str, end_date_str: str
-):
+) -> bool:
     """
     Prepares evaluation data for a given period and sends it to the API.
     """
@@ -88,7 +91,7 @@ def run_evaluation(
 
         if current_period_data.empty:
             print(f"No data found for period {period_name}. Skipping evaluation.")
-            return
+            return False
 
         eval_payload_df = current_period_data[COLUMNS_FOR_EVALUATION_PAYLOAD].copy()
 
@@ -104,15 +107,33 @@ def run_evaluation(
         print(
             f"Sending {len(evaluation_data_payload)} samples to API endpoint {API_EVALUATE_URL}..."
         )
-        response = requests.post(
-            API_EVALUATE_URL,
-            json={
-                "data": evaluation_data_payload,
-                "evaluation_period_name": period_name,
-            },
-            timeout=300,
-        )
-        response.raise_for_status()
+        response = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = requests.post(
+                    API_EVALUATE_URL,
+                    json={
+                        "data": evaluation_data_payload,
+                        "evaluation_period_name": period_name,
+                    },
+                    timeout=300,
+                )
+                response.raise_for_status()
+                break
+            except requests.exceptions.RequestException as error:
+                if attempt == MAX_RETRIES:
+                    print(
+                        f"Evaluation failed after {MAX_RETRIES} attempts: {error}. "
+                        f"Is the API running at {API_EVALUATE_URL}?"
+                    )
+                    return False
+
+                print(
+                    f"Evaluation attempt {attempt}/{MAX_RETRIES} failed: {error}. "
+                    f"Retrying in {RETRY_DELAY_SECONDS} seconds..."
+                )
+                time.sleep(RETRY_DELAY_SECONDS)
+
         result = response.json()
 
         print("Evaluation successful!")
@@ -132,15 +153,14 @@ def run_evaluation(
             f"  - Data Drift Detected: {'Yes' if result.get('drift_detected') == 1 else 'No'}"
         )
         print(f"  - Evaluated Items: {result.get('evaluated_items')}")
+        return True
 
-    except requests.exceptions.RequestException as e:
-        print(
-            f"Error sending evaluation request: {e}. Is the API running at {API_EVALUATE_URL}?"
-        )
     except json.JSONDecodeError:
         print(f"Error decoding response JSON from API. Response text: {response.text}")
+        return False
     except Exception as e:
         print(f"An unexpected error occurred during evaluation: {e}")
+        return False
 
 
 def generate_traffic(count: int, full_data: pd.DataFrame):
@@ -194,4 +214,7 @@ if __name__ == "__main__":
     _full_data_cache = _process_data(_fetch_data())
 
     start_date, end_date = DEFAULT_EVAL_PERIOD
-    run_evaluation(_full_data_cache, DEFAULT_PERIOD_NAME, start_date, end_date)
+    if not run_evaluation(
+        _full_data_cache, DEFAULT_PERIOD_NAME, start_date, end_date
+    ):
+        sys.exit(1)
